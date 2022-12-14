@@ -23,7 +23,7 @@ from dcdfg.perturbseq_data import PerturbSeqDataset
 
 """
 USAGE:
-python -u run_perturbseq_linear.py --data-path small --reg-coeff 0.001 --constraint-mode spectral_radius --lr 0.01 --model linearlr
+python -u run_perturbseq_linear.py --data-path small --reg-coeff 0.001 --constraint-mode spectral_radius --lr 0.001 --model linearlr
 """
 
 if __name__ == "__main__":
@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     # data
     parser.add_argument(
-        "--data-path", type=str, default="small", help="Path to data files"
+        "--data-path", type=str, default="tiny", help="Path to data files"
     )
     parser.add_argument(
         "--save-to", type=str, help="Path to output (predictions)"
@@ -90,6 +90,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-gpus", type=int, default=0)
 
     arg = parser.parse_args()
+    # Make output folder
+    os.makedirs(arg.save_to, exist_ok=True)
 
     # load data and make dataset
     file = os.path.join(arg.data_dir, arg.data_path, "gene_filtered_adata.h5ad")
@@ -206,14 +208,23 @@ if __name__ == "__main__":
     # EVAL on held-out data
     pred = trainer_fine.predict(
         ckpt_path="best",
-        dataloaders=DataLoader(test_dataset, num_workers=8, batch_size=256),
+        dataloaders=DataLoader(test_dataset, num_workers=8, batch_size=1, shuffle=False),
     )
     held_out_nll = np.mean([x.item() for x in pred])
+    # Log the predictions for fig5 
+    pd.DataFrame(
+        {
+            "nll": [x.item() for x in pred], 
+            "regime": test_dataset.regimes,
+            "genes_perturbed": "couldn't figure it out",
+        }, 
+        index = test_dataset.regimes
+    ).to_csv(os.path.join(arg.save_to, "nll_by_regime.csv")) 
 
     # Baseline model: Gaussian with no causal interpretation, with no effect of any intervention (all samples iid)
     relative_size = np.array([
         train_dataset.dataset.adata.obs.shape[0], 
-        val_dataset.dataset.adata.obs.shape[0]
+          val_dataset.dataset.adata.obs.shape[0]
     ])
     relative_size = relative_size/relative_size.sum()
     baseline_predictive_distribution = scipy.stats.multivariate_normal(
@@ -224,12 +235,22 @@ if __name__ == "__main__":
         cov  = \
             relative_size[0]*np.cov(train_dataset.dataset.adata.X.T.toarray()) + \
             relative_size[1]*np.cov(  val_dataset.dataset.adata.X.T.toarray()),
+        allow_singular = True,
     )
     n_genes = test_dataset.adata.var.shape[0]
-    held_out_nll_baseline = np.mean([
+    held_out_nll_baseline_cellwise = [
         -baseline_predictive_distribution.logpdf(test_dataset.adata[cell_barcode,:].X.todense())/ n_genes
         for cell_barcode in test_dataset.adata.obs.index
-    ])
+    ]
+    held_out_nll_baseline = np.mean(held_out_nll_baseline_cellwise)
+    # Log the baseline predictions to add to fig5 
+    pd.DataFrame(
+        {
+            "nll": held_out_nll_baseline_cellwise, 
+            "targets": test_dataset.adata.obs["targets"], 
+        }, 
+        index = test_dataset.adata.obs.index
+    ).groupby("targets").mean().to_csv(os.path.join(arg.save_to, "baseline_nll.csv")) 
 
     # Step 3: score adjacency matrix against groundtruth
     pred_adj = model.module.weight_mask.detach().cpu().numpy()
@@ -267,7 +288,6 @@ if __name__ == "__main__":
             )
     except ValueError as e:
         print(f"simulateKO failed with error {repr(e)}")
-    os.makedirs(arg.save_to, exist_ok=True)
     predicted_adata.write_h5ad(os.path.join(arg.save_to, "predictions.h5ad")) 
 
     # Step 6: Final logs
