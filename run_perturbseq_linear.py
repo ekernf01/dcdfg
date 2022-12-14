@@ -1,13 +1,19 @@
 import argparse
 import os
+import anndata
+import pandas as pd
 
 import numpy as np
+import scipy
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader, random_split
 
 import wandb
+import sys
+os.chdir("/home/ekernf01/Desktop/jhu/research/projects/perturbation_prediction/cell_type_knowledge_transfer/dcdfg")
+sys.path.append("/home/ekernf01/Desktop/jhu/research/projects/perturbation_prediction/cell_type_knowledge_transfer/dcdfg")
 from dcdfg.callback import (AugLagrangianCallback, ConditionalEarlyStopping,
                             CustomProgressBar)
 from dcdfg.linear_baseline.model import LinearGaussianModel
@@ -17,7 +23,7 @@ from dcdfg.perturbseq_data import PerturbSeqDataset
 
 """
 USAGE:
-python -u run_perturbseq_linear.py --data-path control --reg-coeff 0.001 --constraint-mode spectral_radius --lr 0.01 --model linear
+python -u run_perturbseq_linear.py --data-path small --reg-coeff 0.001 --constraint-mode spectral_radius --lr 0.01 --model linearlr
 """
 
 if __name__ == "__main__":
@@ -25,7 +31,10 @@ if __name__ == "__main__":
 
     # data
     parser.add_argument(
-        "--data-path", type=str, default="control", help="Path to data files"
+        "--data-path", type=str, default="small", help="Path to data files"
+    )
+    parser.add_argument(
+        "--save-to", type=str, help="Path to output (predictions)"
     )
     parser.add_argument(
         "--train-samples",
@@ -62,30 +71,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "--constraint-mode",
         type=str,
-        default="exp",
+        default="spectral_radius",
         help="technique for acyclicity constraint",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="linear",
+        default="linearlr",
         help="linear|linearlr|mlplr",
     )
     parser.add_argument(
         "--poly", action="store_true", help="Polynomial on linear model"
     )
 
-
     parser.add_argument(
-        "--data-dir", type=str, default="../perturb-cite-seq/SCP1064/ready/"
+        "--data-dir", type=str, default="perturb-cite-seq/SCP1064/ready/"
     )
-    parser.add_argument("--num-gpus", type=int, default=1)
+    parser.add_argument("--num-gpus", type=int, default=0)
 
     arg = parser.parse_args()
 
     # load data and make dataset
-    folder = arg.data_dir
-    file = arg.data_dir + "/" + arg.data_path + "_gene_filtered_adata.h5ad"
+    file = os.path.join(arg.data_dir, arg.data_path, "gene_filtered_adata.h5ad")
 
     train_dataset = PerturbSeqDataset(
         file, number_genes=1000, fraction_regimes_to_ignore=0.2
@@ -203,6 +210,27 @@ if __name__ == "__main__":
     )
     held_out_nll = np.mean([x.item() for x in pred])
 
+    # Baseline model: Gaussian with no causal interpretation, with no effect of any intervention (all samples iid)
+    relative_size = np.array([
+        train_dataset.dataset.adata.obs.shape[0], 
+        val_dataset.dataset.adata.obs.shape[0]
+    ])
+    relative_size = relative_size/relative_size.sum()
+    baseline_predictive_distribution = scipy.stats.multivariate_normal(
+        mean = np.array(
+            relative_size[0]*train_dataset.dataset.adata.X.mean(axis=0) + \
+            relative_size[1]*  val_dataset.dataset.adata.X.mean(axis=0)
+        ).flatten(),
+        cov  = \
+            relative_size[0]*np.cov(train_dataset.dataset.adata.X.T.toarray()) + \
+            relative_size[1]*np.cov(  val_dataset.dataset.adata.X.T.toarray()),
+    )
+    n_genes = test_dataset.adata.var.shape[0]
+    held_out_nll_baseline = np.mean([
+        -baseline_predictive_distribution.logpdf(test_dataset.adata[cell_barcode,:].X.todense())/ n_genes
+        for cell_barcode in test_dataset.adata.obs.index
+    ])
+
     # Step 3: score adjacency matrix against groundtruth
     pred_adj = model.module.weight_mask.detach().cpu().numpy()
     # check integers
@@ -215,11 +243,40 @@ if __name__ == "__main__":
         dataloaders=DataLoader(val_dataset, num_workers=8, batch_size=256),
     )
     val_nll = np.mean([x.item() for x in pred])
+    
+    # Step 5: save predicted expression 
+    genes = train_dataset.dataset.adata.var_names
+    predicted_adata = anndata.AnnData(
+        X = np.zeros((len(genes), len(genes))),
+        var = train_dataset.dataset.adata.var.copy(),
+        obs = pd.DataFrame(
+            {
+                "perturbation":genes, 
+                "expression_after_perturbation":0,
+            },
+            index = genes, 
+        )
+    )
+    try:
+        for i,perturbed_gene in enumerate(genes):
+            predicted_adata.X[i,:] = model.simulateKO(
+                control_expression = train_dataset.dataset.adata.X[train_dataset.dataset.adata.obs["targets"]=='',:][0,:].toarray(),
+                KO_gene_idx = i,
+                KO_gene_value = 0,
+                maxiter=10
+            )
+    except ValueError as e:
+        print(f"simulateKO failed with error {repr(e)}")
+    os.makedirs(arg.save_to, exist_ok=True)
+    predicted_adata.write_h5ad(os.path.join(arg.save_to, "predictions.h5ad")) 
+
+    # Step 6: Final logs
 
     acyclic = int(model.module.check_acyclicity())
     wandb.log(
         {
             "interv_nll": held_out_nll,
+            "held_out_nll_baseline": held_out_nll_baseline,
             "val nll": val_nll,
             "acyclic": acyclic,
             "n_edges": pred_adj.sum(),
