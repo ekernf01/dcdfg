@@ -1,3 +1,6 @@
+
+Forked from https://github.com/Genentech/dcdfg on 2022-12-14. 
+
 # Differentiable Causal Discovery with Factor Graphs
 
 This repository contains an implementation of the structure learning method described in ["Large-Scale Differentiable Causal Discovery of Factor Graphs"](https://arxiv.org/abs/2206.07824). 
