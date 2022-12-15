@@ -34,7 +34,7 @@ if __name__ == "__main__":
         "--data-path", type=str, default="tiny", help="Path to data files"
     )
     parser.add_argument(
-        "--save-to", type=str, help="Path to output (predictions)"
+        "--save-to", type=str, default = "test_output", help="Path to output (predictions)"
     )
     parser.add_argument(
         "--train-samples",
@@ -211,46 +211,34 @@ if __name__ == "__main__":
         dataloaders=DataLoader(test_dataset, num_workers=8, batch_size=1, shuffle=False),
     )
     held_out_nll = np.mean([x.item() for x in pred])
-    # Log the predictions for fig5 
-    pd.DataFrame(
-        {
-            "nll": [x.item() for x in pred], 
-            "regime": test_dataset.regimes,
-            "genes_perturbed": "couldn't figure it out",
-        }, 
-        index = test_dataset.regimes
-    ).to_csv(os.path.join(arg.save_to, "nll_by_regime.csv")) 
 
     # Baseline model: Gaussian with no causal interpretation, with no effect of any intervention (all samples iid)
-    relative_size = np.array([
-        train_dataset.dataset.adata.obs.shape[0], 
-          val_dataset.dataset.adata.obs.shape[0]
-    ])
-    relative_size = relative_size/relative_size.sum()
     baseline_predictive_distribution = scipy.stats.multivariate_normal(
         mean = np.array(
-            relative_size[0]*train_dataset.dataset.adata.X.mean(axis=0) + \
-            relative_size[1]*  val_dataset.dataset.adata.X.mean(axis=0)
+            np.mean(train_dataset.dataset.data, axis=0) 
         ).flatten(),
-        cov  = \
-            relative_size[0]*np.cov(train_dataset.dataset.adata.X.T.toarray()) + \
-            relative_size[1]*np.cov(  val_dataset.dataset.adata.X.T.toarray()),
+        cov  = np.cov(
+            train_dataset.dataset.data.T.toarray()
+        ) + \
+        0.0001*np.eye(train_dataset.dataset.data.shape[1]),
         allow_singular = True,
     )
-    n_genes = test_dataset.adata.var.shape[0]
-    held_out_nll_baseline_cellwise = [
-        -baseline_predictive_distribution.logpdf(test_dataset.adata[cell_barcode,:].X.todense())/ n_genes
-        for cell_barcode in test_dataset.adata.obs.index
+    n_genes = test_dataset.data.shape[1]
+    held_out_nll_baseline = [
+        -baseline_predictive_distribution.logpdf(test_dataset.data[i,:].todense()) / n_genes
+        for i in range(test_dataset.data.shape[0])
     ]
-    held_out_nll_baseline = np.mean(held_out_nll_baseline_cellwise)
+    held_out_nll_baseline = np.mean(held_out_nll_baseline)
     # Log the baseline predictions to add to fig5 
     pd.DataFrame(
         {
-            "nll": held_out_nll_baseline_cellwise, 
-            "targets": test_dataset.adata.obs["targets"], 
+            "nll": [x.item() for x in pred], 
+            "nll_baseline": held_out_nll_baseline, 
+            "regime": test_dataset.regimes, 
+            "genes_perturbed": [",".join(test_dataset.adata.var_names[m]) for m in test_dataset.masks]
         }, 
-        index = test_dataset.adata.obs.index
-    ).groupby("targets").mean().to_csv(os.path.join(arg.save_to, "baseline_nll.csv")) 
+        index = test_dataset.regimes,
+    ).to_csv(os.path.join(arg.save_to, "nll_per_regime.csv")) 
 
     # Step 3: score adjacency matrix against groundtruth
     pred_adj = model.module.weight_mask.detach().cpu().numpy()
@@ -279,9 +267,10 @@ if __name__ == "__main__":
         )
     )
     try:
+        mean_control_expression = train_dataset.dataset.adata.X[train_dataset.dataset.adata.obs["targets"]=='',:].toarray().mean(0)
         for i,perturbed_gene in enumerate(genes):
             predicted_adata.X[i,:] = model.simulateKO(
-                control_expression = train_dataset.dataset.adata.X[train_dataset.dataset.adata.obs["targets"]=='',:][0,:].toarray(),
+                control_expression = mean_control_expression[np.newaxis, :],
                 KO_gene_idx = i,
                 KO_gene_value = 0,
                 maxiter=10
