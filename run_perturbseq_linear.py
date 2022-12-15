@@ -51,11 +51,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-train-epochs",
         type=int,
-        default=10,
+        default=600,
         help="number of meta gradient steps",
     )
     parser.add_argument(
-        "--num-fine-epochs", type=int, default=5, help="number of meta gradient steps"
+        "--num-fine-epochs", type=int, default=50, help="number of meta gradient steps"
     )
     parser.add_argument("--num-modules", type=int, default=20, help="number of modules")
     # optimization
@@ -271,7 +271,7 @@ if __name__ == "__main__":
         mean_control_expression = train_dataset.dataset.adata.X[train_dataset.dataset.adata.obs["targets"]=='',:].toarray().mean(0)
         for i,perturbed_gene in enumerate(genes):
             predicted_adata.X[i,:] = model.simulateKO(
-                control_expression = mean_control_expression[np.newaxis, :],
+                control_expression = mean_control_expression,
                 KO_gene_idx = i,
                 KO_gene_value = 0,
                 maxiter=10
