@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     # data
     parser.add_argument(
-        "--data-path", type=str, default="tiny", help="Path to data files"
+        "--data-path", type=str, default="small", help="Path to data files"
     )
     parser.add_argument(
         "--save-to", type=str, default = "test_output", help="Path to output (predictions)"
@@ -51,11 +51,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-train-epochs",
         type=int,
-        default=600,
+        default=10,
         help="number of meta gradient steps",
     )
     parser.add_argument(
-        "--num-fine-epochs", type=int, default=50, help="number of meta gradient steps"
+        "--num-fine-epochs", type=int, default=5, help="number of meta gradient steps"
     )
     parser.add_argument("--num-modules", type=int, default=20, help="number of modules")
     # optimization
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="linearlr",
+        default="mlplr",
         help="linear|linearlr|mlplr",
     )
     parser.add_argument(
@@ -228,17 +228,17 @@ if __name__ == "__main__":
         -baseline_predictive_distribution.logpdf(test_dataset.data[i,:].todense()) / n_genes
         for i in range(test_dataset.data.shape[0])
     ]
-    held_out_nll_baseline = np.mean(held_out_nll_baseline)
     # Log the baseline predictions to add to fig5 
-    pd.DataFrame(
+    held_out_nll_per_regime = pd.DataFrame(
         {
-            "nll": [x.item() for x in pred], 
+            "nll":[x.item() for x in pred],
             "nll_baseline": held_out_nll_baseline, 
-            "regime": test_dataset.regimes, 
+            "regime":test_dataset.regimes,                
             "genes_perturbed": [",".join(test_dataset.adata.var_names[m]) for m in test_dataset.masks]
-        }, 
-        index = test_dataset.regimes,
-    ).to_csv(os.path.join(arg.save_to, "nll_per_regime.csv")) 
+        }
+    ).groupby(
+        by = ["regime", "genes_perturbed"],
+    ).mean().reset_index().to_csv(os.path.join(arg.save_to, "nll_per_regime.csv")) 
 
     # Step 3: score adjacency matrix against groundtruth
     pred_adj = model.module.weight_mask.detach().cpu().numpy()
@@ -256,6 +256,7 @@ if __name__ == "__main__":
     # Step 5: save predicted expression 
     genes = train_dataset.dataset.adata.var_names
     predicted_adata = anndata.AnnData(
+        dtype = np.float64,
         X = np.zeros((len(genes), len(genes))),
         var = train_dataset.dataset.adata.var.copy(),
         obs = pd.DataFrame(
@@ -285,7 +286,6 @@ if __name__ == "__main__":
     wandb.log(
         {
             "interv_nll": held_out_nll,
-            "held_out_nll_baseline": held_out_nll_baseline,
             "val nll": val_nll,
             "acyclic": acyclic,
             "n_edges": pred_adj.sum(),
