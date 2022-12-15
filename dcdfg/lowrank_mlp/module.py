@@ -260,8 +260,10 @@ class MLPModularGaussianModule(nn.Module):
             for layer in range(num_layers + 1):
                 # First layer, apply the mask
                 if layer == 0:
+                    if len(x.shape) < 2:
+                        x = x.unsqueeze(0)
                     x = (
-                        torch.einsum("tij,bjt,bj->bti", weights[layer], mask, x)
+                            torch.einsum("tij,bjt,bj->bti", weights[layer], mask, x)
                         + biases[layer]
                     )
                 # 2nd layer and more
