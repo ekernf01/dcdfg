@@ -207,8 +207,8 @@ class LinearGaussianModel(pl.LightningModule):
             print(f"Warning: graph is not acyclic. Predictions may diverge (give NaN's). Setting maxiter to {maxiter_cyclic}.")
             maxiter = maxiter_cyclic            
         x = torch.from_numpy(control_expression)
-        if len(control_expression.shape) < 2:
-            control_expression.unsqueeze(0) # Make it a 1 x N_Genes matrix
+        if len(x.shape) < 2:
+            x = x.unsqueeze(0) # Make it a 1 x N_Genes matrix
         x = x.float()
         for i in range(maxiter):
             xold = x
