@@ -90,15 +90,15 @@ class PerturbSeqDataset(Dataset):
             for j in masks_list:
                 masks[j] = 0
             return (
-                self.data[idx].A[0].astype(np.float32),
-                masks.astype(np.float32),
+                self.data[idx].A[0].astype(np.float64),
+                masks.astype(np.float64),
                 self.regimes[idx],
             )
         else:
             # put full ones mask
             return (
-                self.data[idx].A[0].astype(np.float32),
-                np.ones_like(self.regimes[idx]).astype(np.float32),
+                self.data[idx].A[0].astype(np.float64),
+                np.ones_like(self.regimes[idx]).astype(np.float64),
                 self.regimes[idx],
             )
 

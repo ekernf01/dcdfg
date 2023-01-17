@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, random_split
 
 import wandb
 import sys
-os.chdir("/home/ekernf01/Desktop/jhu/research/projects/perturbation_prediction/cell_type_knowledge_transfer/dcdfg")
-sys.path.append("/home/ekernf01/Desktop/jhu/research/projects/perturbation_prediction/cell_type_knowledge_transfer/dcdfg")
+os.chdir("/home/gary/dcdfg")
+sys.path.append("/home/gary/dcdfg")
 from dcdfg.callback import (AugLagrangianCallback, ConditionalEarlyStopping,
                             CustomProgressBar)
 from dcdfg.linear_baseline.model import LinearGaussianModel
@@ -25,7 +25,9 @@ from dcdfg.perturbseq_data import PerturbSeqDataset
 USAGE:
 python -u run_perturbseq_linear.py --data-path small --reg-coeff 0.001 --constraint-mode spectral_radius --lr 0.001 --model linearlr
 """
+import torch
 
+torch.set_default_tensor_type(torch.DoubleTensor)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -87,7 +89,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-dir", type=str, default="perturb-cite-seq/SCP1064/ready/"
     )
-    parser.add_argument("--num-gpus", type=int, default=0)
+    parser.add_argument("--num-gpus", default=0)
 
     arg = parser.parse_args()
     # Make output folder
@@ -109,6 +111,11 @@ if __name__ == "__main__":
     train_size = int(0.8 * len(train_dataset))
     val_size = len(train_dataset) - train_size
     train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
+    
+    print("Train dataset size", len(train_dataset))
+    print("Val   dataset size", len(val_dataset))
+    print("Test  dataset size", len(test_dataset))
+    
     if arg.model == "linear":
         # create model
         model = LinearGaussianModel(
@@ -139,7 +146,7 @@ if __name__ == "__main__":
     else:
         raise ValueError("couldn't find model")
 
-    logger = WandbLogger(project="DCDI-train-" + arg.data_path, log_model=True)
+    logger = WandbLogger(project="DCDI-train-" + arg.data_path, name=f"{arg.model}_{arg.reg_coeff}_{arg.constraint_mode}", log_model=True)
     # LOG CONFIG
     model_name = model.__class__.__name__
     if arg.poly and model_name == "LinearGaussianModel":
@@ -165,8 +172,8 @@ if __name__ == "__main__":
     )
     trainer.fit(
         model,
-        DataLoader(train_dataset, batch_size=arg.train_batch_size, num_workers=4),
-        DataLoader(val_dataset, num_workers=8, batch_size=256),
+        DataLoader(train_dataset, batch_size=arg.train_batch_size, num_workers=16),
+        DataLoader(val_dataset, num_workers=16, batch_size=256),
     )
     wandb.log({"nll_val": model.nlls_val[-1]})
     wandb.finish()
@@ -181,7 +188,7 @@ if __name__ == "__main__":
     model.mu = 0.0
 
     # Step 2:fine tune weights with frozen model
-    logger = WandbLogger(project="DCDI-fine-" + arg.data_path, log_model=True)
+    logger = WandbLogger(project="DCDI-fine-" + arg.data_path, name=f"{arg.model}_{arg.reg_coeff}_{arg.constraint_mode}", log_model=True)
     model_name = model.__class__.__name__
     if arg.poly and model_name == "LinearGaussianModel":
         model_name += "_poly"
@@ -202,43 +209,65 @@ if __name__ == "__main__":
     trainer_fine.fit(
         model,
         DataLoader(train_dataset, batch_size=arg.train_batch_size),
-        DataLoader(val_dataset, num_workers=2, batch_size=256),
+        DataLoader(val_dataset, num_workers=16, batch_size=256),
     )
 
-    # EVAL on held-out data
-    pred = trainer_fine.predict(
-        ckpt_path="best",
-        dataloaders=DataLoader(test_dataset, num_workers=8, batch_size=1, shuffle=False),
-    )
-    held_out_nll = np.mean([x.item() for x in pred])
 
-    # Baseline model: Gaussian with no causal interpretation, with no effect of any intervention (all samples iid)
-    baseline_predictive_distribution = scipy.stats.multivariate_normal(
-        mean = np.array(
-            np.mean(train_dataset.dataset.data, axis=0) 
-        ).flatten(),
-        cov  = np.cov(
-            train_dataset.dataset.data.T.toarray()
-        ) + \
-        0.0001*np.eye(train_dataset.dataset.data.shape[1]),
-        allow_singular = True,
-    )
-    n_genes = test_dataset.data.shape[1]
-    held_out_nll_baseline = [
-        -baseline_predictive_distribution.logpdf(test_dataset.data[i,:].todense()) / n_genes
-        for i in range(test_dataset.data.shape[0])
-    ]
-    # Log the baseline predictions to add to fig5 
-    held_out_nll_per_regime = pd.DataFrame(
-        {
-            "nll":[x.item() for x in pred],
-            "nll_baseline": held_out_nll_baseline, 
-            "regime":test_dataset.regimes,                
-            "genes_perturbed": [",".join(test_dataset.adata.var_names[m]) for m in test_dataset.masks]
-        }
-    ).groupby(
-        by = ["regime", "genes_perturbed"],
-    ).mean().reset_index().to_csv(os.path.join(arg.save_to, "nll_per_regime.csv")) 
+    try:
+        # EVAL on held-out data
+        pred = trainer_fine.predict(
+            ckpt_path="best",
+            dataloaders=DataLoader(test_dataset, num_workers=16, batch_size=1, shuffle=False),
+        )
+        held_out_nll = np.mean([x.item() for x in pred])
+
+        # Baseline model: Gaussian with no causal interpretation, with no effect of any intervention (all samples iid)
+        # FULL covariances matrix estimated from the training set
+        average = np.array(np.mean(train_dataset.dataset.data, axis=0)).flatten()
+        covar   = np.cov(train_dataset.dataset.data.T.toarray()) + 0.0001*np.eye(train_dataset.dataset.data.shape[1])
+        
+        baseline_full_dist = scipy.stats.multivariate_normal(
+            mean = average,
+            cov  = covar,
+            allow_singular = True,
+        )
+        n_genes = test_dataset.data.shape[1]
+        held_out_nll_baseline_full = [
+            -baseline_full_dist.logpdf(test_dataset.data[i,:].todense()) / n_genes
+            for i in range(test_dataset.data.shape[0])
+        ]
+        
+        # DIAG covariances matrix estimated from the training set
+        covar   = np.diag(np.diag(covar))
+        baseline_diag_dist = scipy.stats.multivariate_normal(
+            mean = average,
+            cov  = covar,
+            allow_singular = True,
+        )
+        n_genes = test_dataset.data.shape[1]
+        held_out_nll_baseline_diag = [
+            -baseline_diag_dist.logpdf(test_dataset.data[i,:].todense()) / n_genes
+            for i in range(test_dataset.data.shape[0])
+        ]
+
+        # Log the baseline predictions to add to fig5 
+        held_out_nll_per_regime = pd.DataFrame(
+            {
+                "nll":[x.item() for x in pred],
+                "nll_baseline_full_covar": held_out_nll_baseline_full, 
+                "nll_baseline_diag_covar": held_out_nll_baseline_diag, 
+                "regime":test_dataset.regimes,                
+                "genes_perturbed": [",".join(test_dataset.adata.var_names[m]) for m in test_dataset.masks]
+            }
+        )
+        held_out_nll_per_regime.to_csv(os.path.join(arg.save_to, "nll_per_cell.csv"))
+        
+        held_out_nll_per_regime.groupby(
+            by = ["regime", "genes_perturbed"],
+        ).mean().reset_index().to_csv(os.path.join(arg.save_to, "nll_per_regime.csv")) 
+    except:
+        print("\n\nFailed to predict on the test set\n\n")
+
 
     # Step 3: score adjacency matrix against groundtruth
     pred_adj = model.module.weight_mask.detach().cpu().numpy()
@@ -246,41 +275,15 @@ if __name__ == "__main__":
     assert np.equal(np.mod(pred_adj, 1), 0).all()
     print("saved, now evaluating")
 
-    # Step 4: add valid nll and dump metrics
-    pred = trainer_fine.predict(
-        ckpt_path="best",
-        dataloaders=DataLoader(val_dataset, num_workers=8, batch_size=256),
-    )
-    val_nll = np.mean([x.item() for x in pred])
-    
-    # Step 5: save predicted expression 
-    genes = train_dataset.dataset.adata.var_names
-    predicted_adata = anndata.AnnData(
-        dtype = np.float64,
-        X = np.zeros((len(genes), len(genes))),
-        var = train_dataset.dataset.adata.var.copy(),
-        obs = pd.DataFrame(
-            {
-                "perturbation":genes, 
-                "expression_after_perturbation":0,
-            },
-            index = genes, 
-        )
-    )
     try:
-        mean_control_expression = train_dataset.dataset.adata.X[train_dataset.dataset.adata.obs["targets"]=='',:].toarray().mean(0)
-        for i,perturbed_gene in enumerate(genes):
-            predicted_adata.X[i,:] = model.simulateKO(
-                control_expression = mean_control_expression,
-                KO_gene_idx = i,
-                KO_gene_value = 0,
-                maxiter=10
-            )
-    except ValueError as e:
-        print(f"simulateKO failed with error {repr(e)}")
-    predicted_adata.write_h5ad(os.path.join(arg.save_to, "predictions.h5ad")) 
-
-    # Step 6: Final logs
+        # Step 4: add valid nll and dump metrics
+        pred = trainer_fine.predict(
+            ckpt_path="best",
+            dataloaders=DataLoader(val_dataset, num_workers=16, batch_size=256),
+        )
+        val_nll = np.mean([x.item() for x in pred])
+    except:
+        print("\n\nFailed to predict on the validation set\n\n")
 
     acyclic = int(model.module.check_acyclicity())
     wandb.log(
@@ -291,3 +294,4 @@ if __name__ == "__main__":
             "n_edges": pred_adj.sum(),
         }
     )
+    wandb.finish()

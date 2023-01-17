@@ -1,6 +1,8 @@
 
 Forked from https://github.com/Genentech/dcdfg on 2022-12-14. 
 
+The environment used to run the python script reproduceResult.py is shown in the spec-file.txt. The script reproduceResult.py performs a hyperparameter sweep over the acyclic constraint penalty mode and a LASSO coefficient for DCDFG and an attempt to reproduce the original DCDFG paper's figure 5 with added baseline that assumes IID Gaussian for training data. 
+
 # Differentiable Causal Discovery with Factor Graphs
 
 This repository contains an implementation of the structure learning method described in ["Large-Scale Differentiable Causal Discovery of Factor Graphs"](https://arxiv.org/abs/2206.07824). 
